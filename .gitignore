@@ -1,0 +1,11 @@
+node_modules/
+.agentic-chat/
+*.credentials.json
+*.state.json
+*.state.json.lock
+*.tmp
+.env
+.env.*
+*.token
+*.log
+.DS_Store
