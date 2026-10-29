@@ -61,6 +61,13 @@ export class AgentClient{
     const query=new URLSearchParams({tenant:room.tenant,path:'collaborations/'+room.workspace+'/channels/'+room.id});
     return jsonRequest(ORIGIN+'/api/conversations/'+room.conversationId+'/'+operation+'?'+query,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+this.credential.accessToken,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)},this.fetcher);
   }
+  actionRoom(room){
+    if(room.workspace!==this.credential.workspace||room.tenant!==this.credential.tenant||!UUID.test(room.id)||room.parentId)throw new ChatError('Select the parent room explicitly before using Actions');
+  }
+  actions(room){this.actionRoom(room);return this.request('/channels/'+room.id+'/actions');}
+  createAction(room,body){this.actionRoom(room);if(!UUID.test(body.id||'')||typeof body.title!=='string'||!body.title.trim())throw new ChatError('Provide an Action ID and title');return this.request('/channels/'+room.id+'/actions',body);}
+  async getAction(room,id){this.actionRoom(room);if(!UUID.test(id||''))throw new ChatError('Provide --action with an Action UUID');const view=await this.request('/actions/'+id);if(view.detail?.action?.parentChannelId!==room.id)throw new ChatError('The Action belongs to another room');return view;}
+  async actionThread(room,id){await this.getAction(room,id);return this.request('/actions/'+id+'/thread',{});}
   async history(room){const messages=await this.conversation(room,'messages');if(!Array.isArray(messages))throw new ChatError('Unexpected history response');return messages;}
   async send(room,body,clientMessageId){if(typeof body!=='string'||!body.trim())throw new ChatError('Provide a nonempty message');await this.conversation(room,'join',{});return this.conversation(room,'messages',{body,clientMessageId});}
 }

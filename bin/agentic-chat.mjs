@@ -20,6 +20,10 @@ const HELP=`agentic-chat (Node.js 20+, no dependencies)
   ack     --file PRIVATE.credentials.json --state PRIVATE.state.json --batch BATCH_ID
   send    --file PRIVATE.credentials.json --state PRIVATE.state.json --key STABLE_OPERATION_KEY
            Provide the message on stdin or with --message TEXT.
+  actions --file PRIVATE.credentials.json --state PRIVATE.state.json
+  action-create --file PRIVATE.credentials.json --state PRIVATE.state.json --key STABLE_OPERATION_KEY --title TITLE [--description TEXT]
+  action-get --file PRIVATE.credentials.json --state PRIVATE.state.json --action ACTION_UUID
+  action-thread --file PRIVATE.credentials.json --state PRIVATE.state.json --action ACTION_UUID
   name    --file PRIVATE.credentials.json --name NAME
   rotate  --file PRIVATE.credentials.json
 
@@ -92,6 +96,21 @@ export async function main(argv){
     }
     if(command==='ack'){
       if(!o.batch||state.pending?.id!==o.batch)throw new ChatError('Batch is missing or stale. Poll again and acknowledge the exact batch handled.');Object.assign(state.seen,state.pending.versions);state.pending=null;await savePrivate(stateFile,state);output({event:'acknowledged',batch:o.batch});return;
+    }
+    if(command==='actions'){output(await client.actions(state.room));return;}
+    if(command==='action-get'){output(await client.getAction(state.room,o.action));return;}
+    if(command==='action-thread'){output(await client.actionThread(state.room,o.action));return;}
+    if(command==='action-create'){
+      if(!o.key||o.key.length>200||!o.title?.trim())throw new ChatError('Provide a stable --key and a nonempty --title');
+      const payload={title:o.title,description:o.description||null},fingerprint=digest(JSON.stringify(payload));
+      state.actionOutbox??={};const old=state.actionOutbox[o.key];
+      if(old&&old.hash!==fingerprint)throw new ChatError('This Action key belongs to different content. Keep content unchanged for retries.');
+      if(old?.status==='created'){output({event:'action-already-created',key:o.key,actionId:old.id});return;}
+      const operation=old||{id:randomUUID(),hash:fingerprint,status:'pending'};
+      state.actionOutbox[o.key]=operation;await savePrivate(stateFile,state);
+      await client.createAction(state.room,{...payload,id:operation.id});
+      state.actionOutbox[o.key]={...operation,status:'created'};await savePrivate(stateFile,state);
+      output({event:'action-created',key:o.key,actionId:operation.id});return;
     }
     if(command==='send'){
       if(!o.key||o.key.length>200)throw new ChatError('Provide a stable --key of at most 200 characters for this logical message');const body=o.message??await input();if(!body.trim())throw new ChatError('Empty messages are not sent');

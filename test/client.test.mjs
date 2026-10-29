@@ -28,3 +28,11 @@ test('credentials travel only in Authorization and redirects are refused',async(
  let calls=0;const client=new AgentClient(c,async(url,o)=>{calls++;assert.equal(o.headers.Authorization,'Bearer '+c.accessToken);assert.ok(!url.includes(c.accessToken));assert.equal(o.redirect,'error');return Response.json({ok:true})});await client.request('/agents/me');assert.equal(calls,1);assert.throws(()=>client.request('/../other'));assert.throws(()=>new AgentClient({...c,origin:'https://evil.example'}));
  await assert.rejects(jsonRequest('https://nodevertex.com/',{},async()=>new Response(null,{status:403})),e=>e.status===403);
 });
+test('Actions stay scoped to the selected parent room and use header authentication',async()=>{
+ const selected={id:room,tenant:'acme',workspace,parentId:null},calls=[];
+ const client=new AgentClient(c,async(url,o)=>{calls.push([url,o]);assert.equal(o.headers.Authorization,'Bearer '+c.accessToken);assert.equal(o.redirect,'error');return Response.json({detail:{action:{parentChannelId:parent}}})});
+ await client.actions(selected);await client.createAction(selected,{id:action,title:'Follow up'});
+ assert.ok(calls[0][0].endsWith('/channels/'+room+'/actions'));assert.equal(JSON.parse(calls[1][1].body).id,action);
+ await assert.rejects(client.actionThread(selected,action),/another room/);assert.equal(calls.length,3);
+ assert.throws(()=>client.actions({...selected,parentId:parent}),/parent room/);assert.throws(()=>client.actions({...selected,tenant:'other'}),/parent room/);
+});

@@ -53,3 +53,16 @@ test('authentication denial stops polling after one request without changing the
  const before=await readPrivate(state),oldFetch=globalThis.fetch;let calls=0;globalThis.fetch=async()=>{calls++;return new Response(null,{status:403})};
  try{await assert.rejects(main(['poll','--file',file,'--state',state,'--wait','25']),e=>e.status===403);assert.equal(calls,1);assert.deepEqual(await readPrivate(state),before);}finally{globalThis.fetch=oldFetch;await rm(dir,{recursive:true,force:true});}
 });
+
+test('Action creation recovers uncertain results with the same UUID and refuses changed retry content',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'agentic-actions-')),file=join(dir,'agent.credentials.json'),state=join(dir,'room.state.json');await savePrivate(file,c,true);
+ await savePrivate(state,{scope:'acme/'+workspace,memberId:member,room:{id:room,tenant:'acme',workspace,conversationId:42,parentId:null},seen:{},pending:null,outbox:{}},true);
+ const oldFetch=globalThis.fetch,oldLog=console.log,posts=[];console.log=()=>{};
+ globalThis.fetch=async(url,o)=>{assert.ok(url.endsWith('/channels/'+room+'/actions'));posts.push(JSON.parse(o.body));if(posts.length===1)throw Error('Lost response');return Response.json({action:{id:posts.at(-1).id}})};
+ const args=['action-create','--file',file,'--state',state,'--key','follow-up-1','--title','Review'];
+ try{
+  await assert.rejects(main(args));assert.equal((await readPrivate(state)).actionOutbox['follow-up-1'].status,'pending');
+  await main(args);assert.equal(posts[0].id,posts[1].id);await main(args);assert.equal(posts.length,2);
+  await assert.rejects(main([...args.slice(0,-1),'Changed']),/different content/);
+ }finally{globalThis.fetch=oldFetch;console.log=oldLog;await rm(dir,{recursive:true,force:true});}
+});

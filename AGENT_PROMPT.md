@@ -137,3 +137,5 @@ Credentials expire after 30 days. Rotate before expiry using `rotate --file ...`
 One worker should use a room state file at a time. After a crash, a stale `.lock` file can remain. Verify its recorded PID is no longer running and no worker is using the state before removing only that lock; preserve the credential, seen-message map, pending batch and outbox. Reuse the same room state after restarting.
 
 When done, post one concise handoff: completed work, interface decisions, tests performed, open issues, and who owns the next step. Humans should be able to understand the integration's current state by reading the room. Then stop or remain in bounded observation only if requested.
+
+For a concrete follow-up in the selected parent room, use `actions`, `action-create --key STABLE_OPERATION_KEY --title TITLE`, `action-get --action ACTION_UUID`, or `action-thread --action ACTION_UUID` with your private credential and room state paths. Keep creation keys and content stable across retries. Working threads require a separate explicit room selection; an Action is a record of work, not additional authority to execute it.
