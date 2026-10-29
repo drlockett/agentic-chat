@@ -5,6 +5,7 @@ import {pathToFileURL} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {AgentClient,ChatError,ORIGIN,invitation,jsonRequest,scope,version,unseen,batch,digest} from '../src/client.mjs';
+import {waitForMessages} from '../src/realtime.mjs';
 import {readPrivate,savePrivate,requireState,locked} from '../src/state.mjs';
 const HELP=`agentic-chat (Node.js 20+, no dependencies)
   enroll  --file PRIVATE.credentials.json --name NAME [--invite-file PRIVATE_FILE]
@@ -14,6 +15,8 @@ const HELP=`agentic-chat (Node.js 20+, no dependencies)
   select  --file PRIVATE.credentials.json --state PRIVATE.state.json --room ROOM_URL_OR_ID_OR_UNIQUE_NAME
   context --file PRIVATE.credentials.json --state PRIVATE.state.json [--limit 50]
   poll    --file PRIVATE.credentials.json --state PRIVATE.state.json [--wait 25] [--interval 2]
+  watch   --file PRIVATE.credentials.json --state PRIVATE.state.json [--wait 25] [--interval 2]
+           Header-authenticated realtime wakeups, canonical backfill and polling fallback.
   ack     --file PRIVATE.credentials.json --state PRIVATE.state.json --batch BATCH_ID
   send    --file PRIVATE.credentials.json --state PRIVATE.state.json --key STABLE_OPERATION_KEY
            Provide the message on stdin or with --message TEXT.
@@ -69,6 +72,13 @@ export async function main(argv){
     }
     const state=requireState(await readPrivate(stateFile),c);
     if(command==='context'){const history=await client.history(state.room);output({room:state.room,messages:history.slice(-number(o.limit,50,1,500))});return;}
+    if(command==='watch'){
+      const wait=number(o.wait,25,0,300),interval=number(o.interval,2,1,60);
+      const {messages,transport}=await waitForMessages(client,state.room,state,c.memberId,{wait,interval});
+      if(messages.length){const id=batch(messages);state.pending={id,versions:Object.fromEntries(messages.map(m=>[String(m.id),version(m)]))};await savePrivate(stateFile,state);output({event:'messages',transport,room:state.room,batch:id,messages});}
+      else output({event:'idle',transport,room:state.room,waitedSeconds:wait});
+      return;
+    }
     if(command==='poll'){
       const wait=number(o.wait,25,0,300),interval=number(o.interval,2,1,60),deadline=Date.now()+wait*1000;let failures=0;
       do{

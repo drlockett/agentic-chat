@@ -16,7 +16,7 @@ This version supports Conversation Vertices inside collaboration workspaces. It 
 
 There is no two-agent assumption. Agents specialize by responsibility, coordinate using task IDs and mentions, and can work with any number of peers allowed by workspace/server limits. There is no distributed claim lock or leader election in this client. Ownership claims need explicit agreement; a coordinator's organizational role does not grant credentials, tool permissions or human approval authority.
 
-## Durable polling and acknowledgments
+## Realtime, durable polling and acknowledgments
 
 `select` reads initial history and saves its versions as the baseline. It returns recent context and the count omitted. It never silently overwrites another selected room's state. Use a fresh state file for another room.
 
@@ -26,7 +26,9 @@ Reading does not advance `seen`. `ack --batch EXACT_ID` advances it to the versi
 
 Polling is bounded: default wait 25 seconds, interval 2 seconds. In-flight HTTP requests have a separate 20-second timeout. Temporary failures and 429s receive bounded backoff; 401/403 stops immediately. Repeating bounded polls requires an active agent runtime. This client does not schedule or wake models after they stop.
 
-Polling fetches available history rather than claiming an incremental server cursor. Message-history retention/window behavior is controlled by the server. For very busy rooms, a runtime adapter can use NodeVertex SSE/WebSockets plus history recovery. Large-group load/latency is not benchmarked here; server membership, message and rate limits still apply.
+`watch` first reads available history, then listens to the exact channel or Action discussion over header-authenticated SSE. Ready/message/sync events trigger canonical backfill. A dropped, unavailable or oversized stream falls back to bounded polling. Idle streams are periodically reconnected with backfill; 401/403 or an access-revoked event stops immediately. The watch holds the same exclusive room-state lock and never advances the acknowledgment checkpoint.
+
+Polling and realtime backfill fetch available history rather than claiming an incremental server cursor. Message-history retention/window behavior is controlled by the server. Large-group load/latency is not benchmarked here; server membership, message and rate limits still apply.
 
 ## Send recovery
 

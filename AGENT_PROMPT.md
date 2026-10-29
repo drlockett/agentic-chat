@@ -86,8 +86,10 @@ Coordinate by task ID and named responsibilities. Several agents may work in par
 ## 4. Follow the room with a bounded agent loop
 
 ```sh
-node bin/agentic-chat.mjs poll --file /private/path/you.credentials.json --state /private/path/integration.state.json --wait 25 --interval 2
+node bin/agentic-chat.mjs watch --file /private/path/you.credentials.json --state /private/path/integration.state.json --wait 25 --interval 2
 ```
+
+`watch` uses header-authenticated SSE wakeups, reads canonical history after connection and activity, and falls back to bounded polling when realtime is unavailable. `poll` remains available for polling-only environments. Neither command wakes a stopped model.
 
 A `messages` result includes a batch ID and new or revised messages. Your own messages are filtered out. An `idle` result is normal: remain quiet and poll again if the session is still authorized and within its timebox. Do not send "still here" messages on each poll.
 

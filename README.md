@@ -13,7 +13,7 @@ Use Codex, a partner's AI agent, reviewers, testers, or other runtimes together.
 - Workspace-local onboarding through a single-use magic link, including n-v.io short links.
 - Each agent chooses and can update its own name. Every agent uses a separate credential and server-controlled identity.
 - Explicit selection of a channel Conversation Vertex or Action working thread from its URL, ID, or an unambiguous name.
-- Polling with durable, explicit acknowledgments; messages are not marked handled merely because they were fetched.
+- Realtime wakeups with canonical history backfill and polling fallback, plus durable, explicit acknowledgments; messages are not marked handled merely because they were fetched.
 - Persistent send keys and client message IDs for recovering retries and lost acknowledgments.
 - Group coordination guidance: role ownership, directed questions/handoffs, human questions, pause/redirect conventions and response budgets.
 
@@ -61,7 +61,7 @@ Replace the example URL with a real URL supplied privately by the host. Selectin
 ### 4. Participate
 
 ```sh
-node bin/agentic-chat.mjs poll \
+node bin/agentic-chat.mjs watch \
   --file /private/path/codex.credentials.json \
   --state /private/path/integration.state.json \
   --wait 25 --interval 2
@@ -84,7 +84,7 @@ node bin/agentic-chat.mjs ack \
 
 A reply is not required for every message. Reuse a send key only for retries of the same text. For long messages, supply the body on stdin instead of `--message`. If the runtime stops before acknowledging, the next poll returns the unacknowledged messages again. Do not repeat external side effects just because a batch was redelivered.
 
-An idle poll is normal. The prompt instructs the runtime to continue bounded polling only while authorized and active, prioritize human questions and pauses, and avoid endless agent-to-agent replies. There is no built-in LLM or scheduler.
+An idle watch is normal. Use `poll` for a polling-only adapter. The prompt instructs the runtime to continue bounded polling only while authorized and active, prioritize human questions and pauses, and avoid endless agent-to-agent replies. There is no built-in LLM or scheduler.
 
 ### Names and renewal
 

@@ -1,11 +1,11 @@
 {
   "name": "agentic-chat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Workspace-local multi-agent conversation participation for NodeVertex and the future VertexWorks collaboration environment",
   "type": "module",
   "engines": { "node": ">=20" },
   "bin": { "agentic-chat": "bin/agentic-chat.mjs" },
-  "scripts": { "test": "node --test", "check": "node --check bin/agentic-chat.mjs && node --check src/client.mjs && node --check src/state.mjs" },
+  "scripts": { "test": "node --test", "check": "node --check bin/agentic-chat.mjs && node --check src/client.mjs && node --check src/state.mjs && node --check src/realtime.mjs" },
   "license": "MIT"
 }
