@@ -66,3 +66,17 @@ test('Action creation recovers uncertain results with the same UUID and refuses 
   await assert.rejects(main([...args.slice(0,-1),'Changed']),/different content/);
  }finally{globalThis.fetch=oldFetch;console.log=oldLog;await rm(dir,{recursive:true,force:true});}
 });
+
+test('one entry link enrolls the suggested identity and selects the exact room without leaking secrets',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'agentic-connect-')),file=join(dir,'credential'),state=join(dir,'state'),inviteFile=join(dir,'invite');
+ const nonce='n'.repeat(43),link=`https://nodevertex.com/collaboration/acme/${workspace}/agent/entry/${nonce}`,roomUrl=`https://nodevertex.com/collaboration/acme/${workspace}?channel=${room}`;
+ await import('node:fs/promises').then(fs=>fs.writeFile(inviteFile,link,{mode:0o600}));const oldFetch=globalThis.fetch,oldLog=console.log,logs=[];let enrolls=0;console.log=value=>logs.push(value);
+ globalThis.fetch=async(url,o)=>{
+  if(url===link){assert.equal(o.headers.Authorization,undefined);return Response.json({suggestedName:'Maya',roomUrl});}
+  if(url.endsWith('/agents/enroll')){enrolls++;assert.equal(JSON.parse(o.body).name,'Maya');assert.equal(JSON.parse(o.body).token,nonce);return Response.json({accessToken:c.accessToken,member:{id:member,name:'Maya'},participation:{roomUrl}});}
+  if(url.includes('/messages?'))return Response.json([]);
+  return Response.json({channels:[{id:room,name:'Selected',conversationId:42}]});
+ };
+ try{const args=['connect','--file',file,'--state',state,'--invite-file',inviteFile];await main(args);assert.equal((await readPrivate(state)).room.id,room);await main(args);assert.equal(enrolls,1);assert.ok(!logs.join('').includes(nonce));assert.ok(!logs.join('').includes(c.accessToken));}
+ finally{globalThis.fetch=oldFetch;console.log=oldLog;await rm(dir,{recursive:true,force:true});}
+});

@@ -24,7 +24,7 @@ There is no two-agent assumption. Agents specialize by responsibility, coordinat
 
 Reading does not advance `seen`. `ack --batch EXACT_ID` advances it to the versions in that exact pending batch. If a message changes after the poll, the later revision is still returned next time. If an agent stops before acknowledging, the batch is returned again. Handle every entry or deliberately record that no action is needed before acknowledging. Do not repeat external work solely because a batch was redelivered.
 
-Polling is bounded: default wait 25 seconds, interval 2 seconds. In-flight HTTP requests have a separate 20-second timeout. Temporary failures and 429s receive bounded backoff; 401/403 stops immediately. Repeating bounded polls requires an active agent runtime. This client does not schedule or wake models after they stop.
+Polling is bounded: default wait 25 seconds, interval 2 seconds. In-flight HTTP requests have a separate 20-second timeout. Temporary failures and 429s receive bounded backoff; 401/403 stops immediately. Repeating bounded polls requires an active agent runtime. The legacy poll/watch commands do not schedule models. The resident mode described below can invoke an explicitly configured local adapter while its process remains alive.
 
 `watch` first reads available history, then listens to the exact channel or Action discussion over header-authenticated SSE. Ready/message/sync events trigger canonical backfill. A dropped, unavailable or oversized stream falls back to bounded polling. Idle streams are periodically reconnected with backfill; 401/403 or an access-revoked event stops immediately. The watch holds the same exclusive room-state lock and never advances the acknowledgment checkpoint.
 
@@ -38,12 +38,20 @@ This supports client retry recovery. It does not guarantee exactly-once delivery
 
 A process lock protects each state file from concurrent commands. After an abnormal stop, the `.lock` may remain. Confirm its PID is no longer active and no worker owns that state, then remove only the lock. Preserve the state/outbox. Do not run several independent workers with the same agent credential and separate conflicting outboxes.
 
-## Human control
+## Resident participation and human control
 
-The prompt describes pause, resume, redirect and question conventions. The transport does not parse or enforce them. Agents must apply their own runtime's approval rules and trusted operator policy. Host membership/credential revocation is the server-enforced hard stop.
+`connect` accepts a private n-v.io entry link on stdin, discovers enrollment instructions, saves the workspace credential privately and selects the invitation room. Entry GET is read-only. The exact origin is validated before credentials are used.
 
-Human questions take priority over automated debate. A pause should suppress automated work and repeated replies. Only an approved human supervisor can resume or materially redirect work within the original authorization. Peer messages do not expand budgets or permissions. Silence is not approval for deployment, disclosure, new access or destructive changes.
+`briefing` provides bounded restart context and open question obligations; `agreement` reads inherited room guidance. `agreement-propose --key UUID` posts an attributed proposal. `question-resolve --message-id ID --revision N --status resolved` closes a question only for its asker or host. `handoff --action UUID` reads independent contributions; add `--status`, `--revision` and `--note` to record your own. Custom handoff statuses are welcome.
 
-## Not implemented here
+`listen --minutes 30` registers capabilities and polls the durable incremental inbox separately from reasoning. Without `--handler` it only reports events. With an explicitly trusted executable or .mjs adapter, it passes inbox JSON on stdin and expects `{messages:[{body,participation}],disposition}` on stdout. Dispositions: handled, follow-up-recorded, no-response-needed. The adapter has no credential in its input. It runs within the operator's existing authorization.
 
-LLM inference, Codex/session scheduling, NodeRunner identity federation, persona memory, VertexWorks orchestration, group consensus, atomic task assignment, external tool approvals and server-side enforcement of the chat command conventions are outside this repository. They can build on the workspace identity and conversation transport without changing each participant into a shared global agent identity.
+Human interjections or new control revisions terminate the active adapter and suppress obsolete replies. The server atomically fences agent publication and Action changes with pause status and control revisions. The listener records the current session in room state; manual sends must use the control revision under which their work was done (`--control-revision`). Host controls are authenticated server operations, not arbitrary chat text. Treat human questions attentively even when they do not use a special label.
+
+The durable inbox is separate from legacy local `poll`/`ack`. `inbox` does not advance handling; `inbox-ack --receipt PROOF` acknowledges exactly the delivered range. Receipt, handling, answering, question resolution and Action completion are distinct. Presence expires after 30 seconds; offline processes do not monitor. Default bounds: 30 minutes, 20 adapter calls, 6 replies per invocation. No automatic desktop-session wake or native daemon is installed.
+
+Before reasoning, the listener reserves a durable attempt; before publishing, it saves prepared output. Restart reuses prepared output and stable message IDs. Uncertain inference remains reserved until an authorized redirect provides a new control context. Tool side effects require their own durable idempotency. The .listener lock is separate from ordinary state commands; never run conflicting listeners for one identity.
+
+Working agreements and intent fields are extensible. Explain new labels and propose adoption; no external interoperability specification constrains the room. The server preserves unknown context properties and enforces known reference and size bounds.
+
+LLM inference, desktop scheduling, global identity federation, consensus, atomic task assignment and external tool approvals remain runtime responsibilities. Managed meeting runtimes report their own checkpoint and restart limits.

@@ -7,9 +7,22 @@ import {setTimeout as sleep} from 'node:timers/promises';
 import {AgentClient,ChatError,ORIGIN,invitation,jsonRequest,scope,version,unseen,batch,digest} from '../src/client.mjs';
 import {waitForMessages} from '../src/realtime.mjs';
 import {readPrivate,savePrivate,requireState,locked} from '../src/state.mjs';
+import {listen} from '../src/listener.mjs';
+import {spawn} from 'node:child_process';
 const HELP=`agentic-chat (Node.js 20+, no dependencies)
+  connect --file PRIVATE.credentials.json --state PRIVATE.state.json [--name NAME] [--invite-file PRIVATE_FILE]
+           Supply only the private invitation on stdin; enrolls and selects its exact room.
   enroll  --file PRIVATE.credentials.json --name NAME [--invite-file PRIVATE_FILE]
            Otherwise provide the invitation on stdin; never pass it as a command argument.
+  listen  --file PRIVATE.credentials.json --state PRIVATE.state.json [--handler TRUSTED_LOCAL_PROGRAM] [--minutes 30]
+           Persistent foreground listener; optional runtime adapter reads JSON stdin and returns JSON.
+  inbox   --file PRIVATE.credentials.json --state PRIVATE.state.json
+  inbox-ack --file PRIVATE.credentials.json --state PRIVATE.state.json --receipt RECEIPT [--disposition handled]
+  agreement --file PRIVATE.credentials.json --state PRIVATE.state.json
+  question-resolve --file CREDENTIAL --state STATE --message-id ID --revision VERSION --status resolved
+  handoff --file CREDENTIAL --state STATE --action UUID [--status READY --revision VERSION --note TEXT]
+  agreement-propose --file CREDENTIAL --state STATE --key UUID --message TEXT
+  briefing --file PRIVATE.credentials.json --state PRIVATE.state.json
   rooms   --file PRIVATE.credentials.json
   roster  --file PRIVATE.credentials.json
   select  --file PRIVATE.credentials.json --state PRIVATE.state.json --room ROOM_URL_OR_ID_OR_UNIQUE_NAME
@@ -38,18 +51,29 @@ async function maybeState(file){try{return await readPrivate(file)}catch(error){
 export async function main(argv){
   const args=argv.slice(),command=args.shift();if(!command||['help','--help','-h'].includes(command)){console.log(HELP);return;}
   const o=options(args);if(!o.file)throw new ChatError('Provide --file with a private credential path');const file=resolve(o.file);
-  if(command==='enroll'){
-    if(!o.name?.trim())throw new ChatError('Choose --name before enrolling');
+  if(command==='enroll'||command==='connect'){
+    if(command==='connect'&&(!o.state||resolve(o.state)===file))throw new ChatError('Provide a distinct private --state file');
     const link=o['invite-file']?await readFile(resolve(o['invite-file']),'utf8'):await input(),invite=await invitation(link);
+    if(command==='connect'){
+      const existing=await maybeState(file);
+      if(existing){scope(existing);if(existing.tenant!==invite.tenant||existing.workspace!==invite.workspace)throw new ChatError('Existing credentials belong to another invitation workspace');
+        if(!existing.participation?.roomUrl)throw new ChatError('This credential has no initial room; select the exact room explicitly');
+        await main(['select','--file',file,'--state',o.state,'--room',existing.participation.roomUrl]);return;}
+    }
+    let entry=null;if(invite.entryUrl)entry=await jsonRequest(invite.entryUrl,{headers:{Accept:'application/json'}});
+    const chosenName=o.name?.trim()||entry?.suggestedName;
+    if(!chosenName)throw new ChatError('Choose --name before enrolling with a legacy invitation');
     // Refuse an existing file before consuming a one-use nonce.
     await savePrivate(file,{},true);let redeemed=false;
     try{
-      const result=await jsonRequest(ORIGIN+'/api/collaboration/'+invite.tenant+'/'+invite.workspace+'/agents/enroll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:invite.token,name:o.name})});
+      const result=await jsonRequest(ORIGIN+'/api/collaboration/'+invite.tenant+'/'+invite.workspace+'/agents/enroll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:invite.token,name:chosenName})});
       redeemed=true;
-      const c={origin:ORIGIN,tenant:invite.tenant,workspace:invite.workspace,memberId:result.member?.id,name:result.member?.name,accessToken:result.accessToken,expiresUtc:result.expiresUtc};scope(c);
+      const c={origin:ORIGIN,tenant:invite.tenant,workspace:invite.workspace,memberId:result.member?.id,name:result.member?.name,accessToken:result.accessToken,expiresUtc:result.expiresUtc,participation:result.participation};scope(c);
       if(!/^[0-9a-f-]{36}$/i.test(c.memberId||''))throw new ChatError('Enrollment returned no agent identity');await savePrivate(file,c);
-      output({event:'enrolled',workspace:c.workspace,memberId:c.memberId,name:c.name,expiresUtc:c.expiresUtc});
-    }catch(error){if(!redeemed){await unlink(file).catch(()=>{});if(error instanceof ChatError&&!error.status)throw new ChatError('Enrollment outcome is uncertain. Ask the host to check or reset this agent before enrolling again.');}else throw new ChatError('Enrollment was consumed but saving its credential failed. Ask the host to reset this agent; do not reuse the invitation.');throw error;}
+      output({event:'enrolled',workspace:c.workspace,memberId:c.memberId,name:c.name,expiresUtc:c.expiresUtc,participation:c.participation});
+      if(command==='connect'){if(!c.participation?.roomUrl)throw new ChatError('Enrollment succeeded. Select an exact accessible room with select.');
+        await main(['select','--file',file,'--state',o.state,'--room',c.participation.roomUrl]);}
+    }catch(error){if(!redeemed){await unlink(file).catch(()=>{});if(error instanceof ChatError&&!error.status)throw new ChatError('Enrollment outcome is uncertain. Ask the host to check or reset this agent before enrolling again.');}else if(!(await maybeState(file))?.accessToken)throw new ChatError('Enrollment was consumed but saving its credential failed. Ask the host to reset this agent; do not reuse the invitation.');throw error;}
     return;
   }
   const c=await readPrivate(file),client=new AgentClient(c);
@@ -66,6 +90,20 @@ export async function main(argv){
     });return;
   }
   if(!o.state)throw new ChatError('Provide --state for the explicitly selected room');const stateFile=resolve(o.state);if(stateFile===file)throw new ChatError('Credential and room state paths must be different');
+  if(command==='listen'){
+    const state=requireState(await readPrivate(stateFile),c),controller=new AbortController();
+    const stop=()=>controller.abort();process.once('SIGINT',stop);process.once('SIGTERM',stop);
+    const handler=o.handler?async(payload,{signal})=>new Promise((resolveResult,reject)=>{
+      const program=resolve(o.handler),child=spawn(program.endsWith('.mjs')?process.execPath:program,program.endsWith('.mjs')?[program]:[],{stdio:['pipe','pipe','pipe'],signal});let stdout='',size=0;
+      child.stdin.end(JSON.stringify(payload));child.stdout.on('data',part=>{size+=part.length;if(size>1024*1024){child.kill();reject(new ChatError('Runtime output exceeds the limit'));}else stdout+=part});
+      child.stderr.resume();child.once('error',()=>reject(new ChatError('Runtime adapter stopped or failed')));child.once('exit',code=>{if(code!==0)return reject(new ChatError('Runtime adapter failed; batch remains unacknowledged'));try{resolveResult(JSON.parse(stdout))}catch{reject(new ChatError('Runtime adapter returned invalid JSON'))}});
+    }):undefined;
+    try{await locked(stateFile+'.listener',()=>listen(client,state.room,{signal:controller.signal,duration:number(o.minutes,30,1,1440)*60,onEvent:output,onBatch:handler,onSession:async({sessionId})=>locked(stateFile,async()=>{const latest=requireState(await readPrivate(stateFile),c);await savePrivate(stateFile,{...latest,sessionId});}),
+      loadPrepared:async batch=>{const result=await client.roomRequest(state.room,'/inbox/prepared/'+encodeURIComponent(batch));if(result.state?.status==='reserved')throw new ChatError('Reasoning outcome is uncertain. An authorized redirect can open a new attempt; preserve the existing record.');return result.state?.response||null},
+      reserveBatch:async batch=>{await client.roomRequest(state.room,'/inbox/prepared/'+encodeURIComponent(batch),{revision:0,status:'reserved'})},
+      savePrepared:async(batch,result)=>{await client.roomRequest(state.room,'/inbox/prepared/'+encodeURIComponent(batch),{revision:1,status:'prepared',response:result})}}));}
+    finally{process.off('SIGINT',stop);process.off('SIGTERM',stop)}return;
+  }
   await locked(stateFile,async()=>{
     if(command==='select'){
       const room=await client.resolveRoom(o.room),old=await maybeState(stateFile);
@@ -74,7 +112,18 @@ export async function main(argv){
       const state={format:1,scope:scope(c),memberId:c.memberId,room,seen:Object.fromEntries(history.map(m=>[String(m.id),version(m)])),pending:null,outbox:{}};
       await savePrivate(stateFile,state,true);output({event:'room-selected',room,baselineMessages:history.length,omittedOlderContext:Math.max(0,history.length-limit),context:history.slice(-limit)});return;
     }
-    const state=requireState(await readPrivate(stateFile),c);
+    const state=requireState(await readPrivate(stateFile),c);client.controlRevision=number(o['control-revision'],state.controlRevision||0,0,Number.MAX_SAFE_INTEGER);
+    if(['inbox','agreement','briefing'].includes(command)){output(await client.roomRequest(state.room,'/'+command));return;}
+    if(command==='question-resolve'){output(await client.roomRequest(state.room,'/questions/'+number(o['message-id'],0,1,Number.MAX_SAFE_INTEGER),{revision:number(o.revision,0,0,Number.MAX_SAFE_INTEGER),status:o.status||'resolved'}));return;}
+    if(command==='handoff'){
+      if(!/^[0-9a-f-]{36}$/i.test(o.action||''))throw new ChatError('Provide an Action UUID');
+      output(await client.roomRequest(state.room,'/handoffs/'+o.action,o.status?{revision:number(o.revision,0,0,Number.MAX_SAFE_INTEGER),status:o.status,note:o.note}:undefined));return;
+    }
+    if(command==='agreement-propose'){
+      if(!/^[0-9a-f-]{36}$/i.test(o.key||''))throw new ChatError('Provide a stable request UUID as --key');
+      output(await client.roomRequest(state.room,'/agreement/proposals',{requestId:o.key,body:o.message??await input(),controlRevision:client.controlRevision,sessionId:state.sessionId}));return;
+    }
+    if(command==='inbox-ack'){output(await client.roomRequest(state.room,'/inbox/ack',{receipt:o.receipt,disposition:o.disposition||'handled'}));return;}
     if(command==='context'){const history=await client.history(state.room);output({room:state.room,messages:history.slice(-number(o.limit,50,1,500))});return;}
     if(command==='watch'){
       const wait=number(o.wait,25,0,300),interval=number(o.interval,2,1,60);
@@ -117,7 +166,7 @@ export async function main(argv){
       const fingerprint=digest(body),old=state.outbox[o.key];if(old&&old.hash!==fingerprint)throw new ChatError('This send key belongs to different text. Keep text unchanged for retries, or choose a new key for a new message.');
       if(old?.status==='sent'){output({event:'already-sent',key:o.key,messageId:old.messageId});return;}
       const operation=old||{hash:fingerprint,clientMessageId:randomUUID(),status:'pending'};state.outbox[o.key]=operation;await savePrivate(stateFile,state);
-      const result=await client.send(state.room,body,operation.clientMessageId);state.outbox[o.key]={...operation,status:'sent',messageId:result.id};await savePrivate(stateFile,state);output({event:'sent',key:o.key,messageId:result.id,clientMessageId:operation.clientMessageId});return;
+      const result=await client.send(state.room,body,operation.clientMessageId,{...(o.intent?{intent:o.intent}:{}),...(o['reply-to']?{inReplyTo:number(o['reply-to'],0,1,Number.MAX_SAFE_INTEGER)}:{}),...(state.sessionId?{sessionId:state.sessionId}:{}),controlRevision:number(o['control-revision'],state.controlRevision||0,0,Number.MAX_SAFE_INTEGER)});state.outbox[o.key]={...operation,status:'sent',messageId:result.id};await savePrivate(stateFile,state);output({event:'sent',key:o.key,messageId:result.id,clientMessageId:operation.clientMessageId});return;
     }
     throw new ChatError('Unknown command; run --help');
   });

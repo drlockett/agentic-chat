@@ -11,9 +11,10 @@ export async function invitation(link,fetcher=fetch){
     if(![301,302,303,307,308].includes(response.status)||!target)throw new ChatError('The short invitation could not be resolved');
     try{url=new URL(target,url)}catch{throw new ChatError('Invalid invitation redirect');}
   }
-  const match=/^\/collaboration\/([a-zA-Z0-9_-]+)\/([^/]+)\/agent$/.exec(url.pathname);
-  if(!trusted(url)||!match||!UUID.test(match[2])||url.search||!/^#[a-zA-Z0-9_-]{40,128}$/.test(url.hash))throw new ChatError('Use a NodeVertex agent enrollment link, not a human invitation or workspace URL');
-  return {origin:ORIGIN,tenant:match[1],workspace:match[2],token:url.hash.slice(1)};
+  const entry=/^\/collaboration\/([a-zA-Z0-9_-]+)\/([^/]+)\/agent\/entry\/([a-zA-Z0-9_-]{40,128})$/.exec(url.pathname);
+  const match=entry||/^\/collaboration\/([a-zA-Z0-9_-]+)\/([^/]+)\/agent$/.exec(url.pathname);
+  if(!trusted(url)||!match||!UUID.test(match[2])||url.search||!(entry?!url.hash:/^#[a-zA-Z0-9_-]{40,128}$/.test(url.hash)))throw new ChatError('Use a NodeVertex agent enrollment link, not a human invitation or workspace URL');
+  return {origin:ORIGIN,tenant:match[1],workspace:match[2],token:entry?entry[3]:url.hash.slice(1),...(entry?{entryUrl:url.href}:{})};
 }
 export function scope(c){
   if(c.origin!==ORIGIN||! /^[a-zA-Z0-9_-]+$/.test(c.tenant)||!UUID.test(c.workspace)||! /^nvwa_[a-zA-Z0-9_-]{40,128}$/.test(c.accessToken))throw new ChatError('Invalid workspace credential');
@@ -31,7 +32,7 @@ export class AgentClient{
   constructor(credential,fetcher=fetch){scope(credential);this.credential=credential;this.fetcher=fetcher;this.base=ORIGIN+'/api/collaboration/'+scope(credential);}
   request(path='',body){
     if(path&&!/^\/[a-zA-Z0-9_/?=&%-]+$/.test(path))throw new ChatError('Invalid workspace API path');
-    return jsonRequest(this.base+path,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+this.credential.accessToken,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)},this.fetcher);
+    return jsonRequest(this.base+path,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+this.credential.accessToken,...(Number.isSafeInteger(this.controlRevision)?{'X-NodeVertex-Control-Revision':String(this.controlRevision)}:{}),...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)},this.fetcher);
   }
   async rooms(){
     const snapshot=await this.request();return (snapshot.channels||[]).flatMap(c=>[{id:c.id,name:c.name,conversationId:c.conversationId,private:c.private,parentId:null},...(c.workingThreads||[]).map(t=>({id:t.channelId,name:t.title,conversationId:t.conversationId,private:c.private,parentId:c.id,actionId:t.id}))]);
@@ -59,7 +60,7 @@ export class AgentClient{
   conversation(room,operation,body){
     if(room.workspace!==this.credential.workspace||room.tenant!==this.credential.tenant||!UUID.test(room.id)||!Number.isSafeInteger(room.conversationId)||room.conversationId<=0||!['join','messages'].includes(operation))throw new ChatError('Invalid or mismatched selected room');
     const query=new URLSearchParams({tenant:room.tenant,path:'collaborations/'+room.workspace+'/channels/'+room.id});
-    return jsonRequest(ORIGIN+'/api/conversations/'+room.conversationId+'/'+operation+'?'+query,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+this.credential.accessToken,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)},this.fetcher);
+    return jsonRequest(ORIGIN+'/api/conversations/'+room.conversationId+'/'+operation+'?'+query,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+this.credential.accessToken,...(Number.isSafeInteger(this.controlRevision)?{'X-NodeVertex-Control-Revision':String(this.controlRevision)}:{}),...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)},this.fetcher);
   }
   actionRoom(room){
     if(room.workspace!==this.credential.workspace||room.tenant!==this.credential.tenant||!UUID.test(room.id)||room.parentId)throw new ChatError('Select the parent room explicitly before using Actions');
@@ -69,7 +70,11 @@ export class AgentClient{
   async getAction(room,id){this.actionRoom(room);if(!UUID.test(id||''))throw new ChatError('Provide --action with an Action UUID');const view=await this.request('/actions/'+id);if(view.detail?.action?.parentChannelId!==room.id)throw new ChatError('The Action belongs to another room');return view;}
   async actionThread(room,id){await this.getAction(room,id);return this.request('/actions/'+id+'/thread',{});}
   async history(room){const messages=await this.conversation(room,'messages');if(!Array.isArray(messages))throw new ChatError('Unexpected history response');return messages;}
-  async send(room,body,clientMessageId){if(typeof body!=='string'||!body.trim())throw new ChatError('Provide a nonempty message');await this.conversation(room,'join',{});return this.conversation(room,'messages',{body,clientMessageId});}
+  roomRequest(room,path,body){
+    if(room.workspace!==this.credential.workspace||room.tenant!==this.credential.tenant||!UUID.test(room.id))throw new ChatError('Invalid room binding');
+    return this.request('/channels/'+room.id+path,body);
+  }
+  async send(room,body,clientMessageId,participation){if(typeof body!=='string'||!body.trim())throw new ChatError('Provide a nonempty message');await this.conversation(room,'join',{});return this.conversation(room,'messages',{body,clientMessageId,...(participation?{participation}:{})});}
 }
 export function version(message){return String(message.revision??message.id)+':'+Boolean(message.deleted);}
 export function unseen(messages,state,self){return messages.filter(m=>m&&m.id!=null&&m.participantKey!=='collab_'+self.replaceAll('-','')&&state.seen[String(m.id)]!==version(m));}
