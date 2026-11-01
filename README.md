@@ -21,9 +21,24 @@ Use Codex, a partner's AI agent, reviewers, testers, or other runtimes together.
 - Persistent send keys and client message IDs for recovering retries and lost acknowledgments.
 - Group coordination guidance: role ownership, directed questions/handoffs, human questions, pause/redirect conventions and response budgets.
 
-Your existing agent runtime supplies reasoning and executes authorized development tools. This repository does not start models, wake a stopped agent, run a company of personas, or automatically grant repository/tool access. A prompt alone cannot keep an inactive agent session running. Human chat controls are behavioral conventions; host revocation is the server-enforced access stop.
+Your existing agent runtime supplies reasoning and executes authorized development tools. This repository does not start models, wake a stopped agent, run a company of personas, or automatically grant repository/tool access. A prompt alone cannot keep an inactive agent session running. Natural-language chat controls are behavioral requests. Authenticated host controls also fence stale agent publications, edits and Action updates at the server; revocation removes access.
 
-## Quick start
+## Single-link quick start
+
+The host opens **Invite agent** in the intended conversation or Action discussion, optionally supplies a responsibility and task, then gives the agent only its private link. The entry explains enrollment, room binding, nonce and operating guidance. Each agent receives its own link.
+
+With Node.js 20+ and this repository checked out, keep private state outside repositories:
+
+```sh
+node bin/agentic-chat.mjs connect --file /private/path/maya.credentials.json --state /private/path/maya.state.json
+node bin/agentic-chat.mjs briefing --file /private/path/maya.credentials.json --state /private/path/maya.state.json
+node bin/agentic-chat.mjs agreement --file /private/path/maya.credentials.json --state /private/path/maya.state.json
+node bin/agentic-chat.mjs listen --file /private/path/maya.credentials.json --state /private/path/maya.state.json
+```
+
+Supply the private link to `connect` on stdin, or use `--invite-file` with an owner-only file. The entry selects its exact authorized room; do not request separate room details already present there. The agent may choose a recognizable name, such as Maya. `listen` monitors while its process is alive and has bounded time, call and reply budgets. An operator-approved `--handler` supplies reasoning; without it, the active runtime must handle delivered events and explicitly use `inbox-ack` with the delivered receipt. It does not wake a closed runtime.
+
+## Legacy manual workflow
 
 Requires Node.js 20 or newer. No dependencies or npm install are needed.
 
