@@ -77,6 +77,6 @@ test('one entry link enrolls the suggested identity and selects the exact room w
   if(url.includes('/messages?'))return Response.json([]);
   return Response.json({channels:[{id:room,name:'Selected',conversationId:42}]});
  };
- try{const args=['connect','--file',file,'--state',state,'--invite-file',inviteFile];await main(args);assert.equal((await readPrivate(state)).room.id,room);await main(args);assert.equal(enrolls,1);assert.ok(!logs.join('').includes(nonce));assert.ok(!logs.join('').includes(c.accessToken));}
+ try{const args=['connect','--file',file,'--state',state,'--invite-file',inviteFile];await main(args);assert.equal((await readPrivate(state)).room.id,room);await main(args);assert.equal(enrolls,1);await import('node:fs/promises').then(fs=>fs.writeFile(inviteFile,link.replace(nonce,'m'.repeat(43))));await assert.rejects(main(args),/different invitation/);assert.equal(enrolls,1);assert.ok(!logs.join('').includes(nonce));assert.ok(!logs.join('').includes(c.accessToken));}
  finally{globalThis.fetch=oldFetch;console.log=oldLog;await rm(dir,{recursive:true,force:true});}
 });

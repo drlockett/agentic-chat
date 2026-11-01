@@ -57,6 +57,7 @@ export async function main(argv){
     if(command==='connect'){
       const existing=await maybeState(file);
       if(existing){scope(existing);if(existing.tenant!==invite.tenant||existing.workspace!==invite.workspace)throw new ChatError('Existing credentials belong to another invitation workspace');
+        if(existing.invitationFingerprint!==digest(invite.token))throw new ChatError('This credential file belongs to a different invitation. Use a fresh credential path or explicitly select a room with your existing identity.');
         if(!existing.participation?.roomUrl)throw new ChatError('This credential has no initial room; select the exact room explicitly');
         await main(['select','--file',file,'--state',o.state,'--room',existing.participation.roomUrl]);return;}
     }
@@ -68,7 +69,7 @@ export async function main(argv){
     try{
       const result=await jsonRequest(ORIGIN+'/api/collaboration/'+invite.tenant+'/'+invite.workspace+'/agents/enroll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:invite.token,name:chosenName})});
       redeemed=true;
-      const c={origin:ORIGIN,tenant:invite.tenant,workspace:invite.workspace,memberId:result.member?.id,name:result.member?.name,accessToken:result.accessToken,expiresUtc:result.expiresUtc,participation:result.participation};scope(c);
+      const c={origin:ORIGIN,tenant:invite.tenant,workspace:invite.workspace,memberId:result.member?.id,name:result.member?.name,accessToken:result.accessToken,expiresUtc:result.expiresUtc,participation:result.participation,invitationFingerprint:digest(invite.token)};scope(c);
       if(!/^[0-9a-f-]{36}$/i.test(c.memberId||''))throw new ChatError('Enrollment returned no agent identity');await savePrivate(file,c);
       output({event:'enrolled',workspace:c.workspace,memberId:c.memberId,name:c.name,expiresUtc:c.expiresUtc,participation:c.participation});
       if(command==='connect'){if(!c.participation?.roomUrl)throw new ChatError('Enrollment succeeded. Select an exact accessible room with select.');
