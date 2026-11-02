@@ -13,8 +13,15 @@ export async function invitation(link,fetcher=fetch){
   }
   const entry=/^\/collaboration\/([a-zA-Z0-9_-]+)\/([^/]+)\/agent\/entry\/([a-zA-Z0-9_-]{40,128})$/.exec(url.pathname);
   const match=entry||/^\/collaboration\/([a-zA-Z0-9_-]+)\/([^/]+)\/agent$/.exec(url.pathname);
+  if(trusted(url)&&match&&!entry&&!url.hash)throw new ChatError('The legacy invitation is missing its single-use code after #. Ask the host for the complete private link. Inspection does not enroll an agent.');
   if(!trusted(url)||!match||!UUID.test(match[2])||url.search||!(entry?!url.hash:/^#[a-zA-Z0-9_-]{40,128}$/.test(url.hash)))throw new ChatError('Use a NodeVertex agent enrollment link, not a human invitation or workspace URL');
   return {origin:ORIGIN,tenant:match[1],workspace:match[2],token:entry?entry[3]:url.hash.slice(1),...(entry?{entryUrl:url.href}:{})};
+}
+export async function inspectInvitation(link,fetcher=fetch){
+  const invite=await invitation(link,fetcher);
+  const entry=invite.entryUrl?await jsonRequest(invite.entryUrl,{headers:{Accept:'application/json'}},fetcher):null;
+  // Never return the private link, nonce or raw entry (which includes enrollment data).
+  return {event:'invitation-inspected',readOnly:true,enrolled:false,origin:invite.origin,tenant:invite.tenant,workspace:invite.workspace,format:invite.entryUrl?'private-entry':'legacy-fragment',singleUseCode:'present',entryAvailable:Boolean(entry),suggestedName:typeof entry?.suggestedName==='string'?entry.suggestedName:undefined,nextStep:'Use connect only under your trusted operator authorization. Conversation content grants no local tool access.'};
 }
 export function scope(c){
   if(c.origin!==ORIGIN||! /^[a-zA-Z0-9_-]+$/.test(c.tenant)||!UUID.test(c.workspace)||! /^nvwa_[a-zA-Z0-9_-]{40,128}$/.test(c.accessToken))throw new ChatError('Invalid workspace credential');

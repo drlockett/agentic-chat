@@ -4,12 +4,14 @@ import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as sleep} from 'node:timers/promises';
-import {AgentClient,ChatError,ORIGIN,invitation,jsonRequest,scope,version,unseen,batch,digest} from '../src/client.mjs';
+import {AgentClient,ChatError,ORIGIN,invitation,inspectInvitation,jsonRequest,scope,version,unseen,batch,digest} from '../src/client.mjs';
 import {waitForMessages} from '../src/realtime.mjs';
 import {readPrivate,savePrivate,requireState,locked} from '../src/state.mjs';
 import {listen} from '../src/listener.mjs';
 import {spawn} from 'node:child_process';
 const HELP=`agentic-chat (Node.js 20+, no dependencies)
+  inspect [--invite-file PRIVATE_FILE]
+           Read-only link diagnostics from stdin or a private file; never enrolls or saves credentials.
   connect --file PRIVATE.credentials.json --state PRIVATE.state.json [--name NAME] [--invite-file PRIVATE_FILE]
            Supply only the private invitation on stdin; enrolls and selects its exact room.
   enroll  --file PRIVATE.credentials.json --name NAME [--invite-file PRIVATE_FILE]
@@ -17,8 +19,11 @@ const HELP=`agentic-chat (Node.js 20+, no dependencies)
   listen  --file PRIVATE.credentials.json --state PRIVATE.state.json [--handler TRUSTED_LOCAL_PROGRAM] [--minutes 30]
            Persistent foreground listener; optional runtime adapter reads JSON stdin and returns JSON.
   inbox   --file PRIVATE.credentials.json --state PRIVATE.state.json
-  inbox-ack --file PRIVATE.credentials.json --state PRIVATE.state.json --receipt RECEIPT [--disposition handled]
+  inbox-ack --file PRIVATE.credentials.json --state PRIVATE.state.json --receipt RECEIPT [--disposition handled] [--include-human true]
+           Include priority human events only after explicitly handling both delivered lanes.
   agreement --file PRIVATE.credentials.json --state PRIVATE.state.json
+  engagement --file CREDENTIAL --state STATE [--status active|contribution-complete|awaiting-release|blocked|stopped --revision N --summary TEXT]
+           Read your assignment policy or update your own checkpoint. Contribution complete is not host release.
   question-resolve --file CREDENTIAL --state STATE --message-id ID --revision VERSION --status resolved
   handoff --file CREDENTIAL --state STATE --action UUID [--status READY --revision VERSION --note TEXT]
   agreement-propose --file CREDENTIAL --state STATE --key UUID --message TEXT
@@ -32,6 +37,7 @@ const HELP=`agentic-chat (Node.js 20+, no dependencies)
            Header-authenticated realtime wakeups, canonical backfill and polling fallback.
   ack     --file PRIVATE.credentials.json --state PRIVATE.state.json --batch BATCH_ID
   send    --file PRIVATE.credentials.json --state PRIVATE.state.json --key STABLE_OPERATION_KEY
+          [--recipients MEMBER_ID[,MEMBER_ID]] [--reply-to MESSAGE_ID] [--observed-human-cursor ID]
            Provide the message on stdin or with --message TEXT.
   actions --file PRIVATE.credentials.json --state PRIVATE.state.json
   action-create --file PRIVATE.credentials.json --state PRIVATE.state.json --key STABLE_OPERATION_KEY --title TITLE [--description TEXT]
@@ -50,7 +56,9 @@ function output(value){console.log(JSON.stringify(value));}
 async function maybeState(file){try{return await readPrivate(file)}catch(error){if(error.code==='ENOENT')return null;throw error;}}
 export async function main(argv){
   const args=argv.slice(),command=args.shift();if(!command||['help','--help','-h'].includes(command)){console.log(HELP);return;}
-  const o=options(args);if(!o.file)throw new ChatError('Provide --file with a private credential path');const file=resolve(o.file);
+  const o=options(args);
+  if(command==='inspect'){output(await inspectInvitation(o['invite-file']?await readFile(resolve(o['invite-file']),'utf8'):await input()));return;}
+  if(!o.file)throw new ChatError('Provide --file with a private credential path');const file=resolve(o.file);
   if(command==='enroll'||command==='connect'){
     if(command==='connect'&&(!o.state||resolve(o.state)===file))throw new ChatError('Provide a distinct private --state file');
     const link=o['invite-file']?await readFile(resolve(o['invite-file']),'utf8'):await input(),invite=await invitation(link);
@@ -99,7 +107,8 @@ export async function main(argv){
       child.stdin.end(JSON.stringify(payload));child.stdout.on('data',part=>{size+=part.length;if(size>1024*1024){child.kill();reject(new ChatError('Runtime output exceeds the limit'));}else stdout+=part});
       child.stderr.resume();child.once('error',()=>reject(new ChatError('Runtime adapter stopped or failed')));child.once('exit',code=>{if(code!==0)return reject(new ChatError('Runtime adapter failed; batch remains unacknowledged'));try{resolveResult(JSON.parse(stdout))}catch{reject(new ChatError('Runtime adapter returned invalid JSON'))}});
     }):undefined;
-    try{await locked(stateFile+'.listener',()=>listen(client,state.room,{signal:controller.signal,duration:number(o.minutes,30,1,1440)*60,onEvent:output,onBatch:handler,onSession:async({sessionId})=>locked(stateFile,async()=>{const latest=requireState(await readPrivate(stateFile),c);await savePrivate(stateFile,{...latest,sessionId});}),
+    try{await locked(stateFile+'.listener',()=>listen(client,state.room,{signal:controller.signal,duration:number(o.minutes,30,1,1440)*60,continuity:state.checkpoint||{},onEvent:output,onBatch:handler,onSession:async({sessionId,attentionUntil})=>locked(stateFile,async()=>{const latest=requireState(await readPrivate(stateFile),c);await savePrivate(stateFile,{...latest,sessionId,attentionUntil});}),
+      onCheckpoint:async checkpoint=>locked(stateFile,async()=>{const latest=requireState(await readPrivate(stateFile),c);await savePrivate(stateFile,{...latest,checkpoint,controlRevision:checkpoint.controlRevision,observedHumanCursor:checkpoint.observedHumanCursor});}),
       loadPrepared:async batch=>{const result=await client.roomRequest(state.room,'/inbox/prepared/'+encodeURIComponent(batch));if(result.state?.status==='reserved')throw new ChatError('Reasoning outcome is uncertain. An authorized redirect can open a new attempt; preserve the existing record.');return result.state?.response||null},
       reserveBatch:async batch=>{await client.roomRequest(state.room,'/inbox/prepared/'+encodeURIComponent(batch),{revision:0,status:'reserved'})},
       savePrepared:async(batch,result)=>{await client.roomRequest(state.room,'/inbox/prepared/'+encodeURIComponent(batch),{revision:1,status:'prepared',response:result})}}));}
@@ -114,7 +123,11 @@ export async function main(argv){
       await savePrivate(stateFile,state,true);output({event:'room-selected',room,baselineMessages:history.length,omittedOlderContext:Math.max(0,history.length-limit),context:history.slice(-limit)});return;
     }
     const state=requireState(await readPrivate(stateFile),c);client.controlRevision=number(o['control-revision'],state.controlRevision||0,0,Number.MAX_SAFE_INTEGER);
-    if(['inbox','agreement','briefing'].includes(command)){output(await client.roomRequest(state.room,'/'+command));return;}
+    if(['inbox','agreement','briefing'].includes(command)){const result=await client.roomRequest(state.room,'/'+command);if(command==='inbox'){state.controlRevision=result.controlRevision;state.observedHumanCursor=result.humanCursor??0;await savePrivate(stateFile,state);}output(result);return;}
+    if(command==='engagement'){
+      if(o.status&&!['active','contribution-complete','awaiting-release','blocked','stopped'].includes(o.status))throw new ChatError('Invalid engagement status; host release is a separate authenticated control');
+      output(await client.roomRequest(state.room,'/engagement',o.status?{revision:number(o.revision,0,0,Number.MAX_SAFE_INTEGER),status:o.status,summary:o.summary,milestone:o.milestone,...(o['attention-until']?{attentionUntil:o['attention-until']}:{})}:undefined));return;
+    }
     if(command==='question-resolve'){output(await client.roomRequest(state.room,'/questions/'+number(o['message-id'],0,1,Number.MAX_SAFE_INTEGER),{revision:number(o.revision,0,0,Number.MAX_SAFE_INTEGER),status:o.status||'resolved'}));return;}
     if(command==='handoff'){
       if(!/^[0-9a-f-]{36}$/i.test(o.action||''))throw new ChatError('Provide an Action UUID');
@@ -124,7 +137,7 @@ export async function main(argv){
       if(!/^[0-9a-f-]{36}$/i.test(o.key||''))throw new ChatError('Provide a stable request UUID as --key');
       output(await client.roomRequest(state.room,'/agreement/proposals',{requestId:o.key,body:o.message??await input(),controlRevision:client.controlRevision,sessionId:state.sessionId}));return;
     }
-    if(command==='inbox-ack'){output(await client.roomRequest(state.room,'/inbox/ack',{receipt:o.receipt,disposition:o.disposition||'handled'}));return;}
+    if(command==='inbox-ack'){if(o['include-human']!==undefined&&!['true','false'].includes(o['include-human']))throw new ChatError('Use --include-human true only after handling the priority human lane');output(await client.roomRequest(state.room,'/inbox/ack',{receipt:o.receipt,disposition:o.disposition||'handled',acknowledgeHuman:o['include-human']==='true'}));return;}
     if(command==='context'){const history=await client.history(state.room);output({room:state.room,messages:history.slice(-number(o.limit,50,1,500))});return;}
     if(command==='watch'){
       const wait=number(o.wait,25,0,300),interval=number(o.interval,2,1,60);
@@ -166,8 +179,12 @@ export async function main(argv){
       if(!o.key||o.key.length>200)throw new ChatError('Provide a stable --key of at most 200 characters for this logical message');const body=o.message??await input();if(!body.trim())throw new ChatError('Empty messages are not sent');
       const fingerprint=digest(body),old=state.outbox[o.key];if(old&&old.hash!==fingerprint)throw new ChatError('This send key belongs to different text. Keep text unchanged for retries, or choose a new key for a new message.');
       if(old?.status==='sent'){output({event:'already-sent',key:o.key,messageId:old.messageId});return;}
-      const operation=old||{hash:fingerprint,clientMessageId:randomUUID(),status:'pending'};state.outbox[o.key]=operation;await savePrivate(stateFile,state);
-      const result=await client.send(state.room,body,operation.clientMessageId,{...(o.intent?{intent:o.intent}:{}),...(o['reply-to']?{inReplyTo:number(o['reply-to'],0,1,Number.MAX_SAFE_INTEGER)}:{}),...(state.sessionId?{sessionId:state.sessionId}:{}),controlRevision:number(o['control-revision'],state.controlRevision||0,0,Number.MAX_SAFE_INTEGER)});state.outbox[o.key]={...operation,status:'sent',messageId:result.id};await savePrivate(stateFile,state);output({event:'sent',key:o.key,messageId:result.id,clientMessageId:operation.clientMessageId});return;
+      const recipients=o.recipients?.split(',').map(id=>id.trim());if(recipients&&(recipients.length>20||recipients.some(id=>!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))))throw new ChatError('Provide at most 20 explicit recipient member UUIDs separated by commas');
+      const participation={...(o.intent?{intent:o.intent}:{}),...(o['reply-to']?{inReplyTo:number(o['reply-to'],0,1,Number.MAX_SAFE_INTEGER)}:{}),...(recipients?{recipients}:{}),controlRevision:number(o['control-revision'],state.controlRevision||0,0,Number.MAX_SAFE_INTEGER),observedHumanCursor:number(o['observed-human-cursor'],state.observedHumanCursor||0,0,Number.MAX_SAFE_INTEGER)};
+      if(old?.participation)for(const [option,key] of [['intent','intent'],['reply-to','inReplyTo'],['recipients','recipients'],['control-revision','controlRevision'],['observed-human-cursor','observedHumanCursor']])if(o[option]!==undefined&&JSON.stringify(old.participation[key])!==JSON.stringify(participation[key]))throw new ChatError('This send key belongs to different participation context. Preserve it for the original retry; use a new key for a newly reasoned response.');
+      const operation=old||{hash:fingerprint,clientMessageId:randomUUID(),status:'pending',participation};state.outbox[o.key]=operation;await savePrivate(stateFile,state);
+      const originalParticipation=operation.participation||{controlRevision:operation.controlRevision??participation.controlRevision,observedHumanCursor:operation.observedHumanCursor??0};client.controlRevision=originalParticipation.controlRevision;
+      const result=await client.send(state.room,body,operation.clientMessageId,{...participation,...originalParticipation,...(state.sessionId?{sessionId:state.sessionId}:{})});state.outbox[o.key]={...operation,status:'sent',messageId:result.id};await savePrivate(stateFile,state);output({event:'sent',key:o.key,messageId:result.id,clientMessageId:operation.clientMessageId});return;
     }
     throw new ChatError('Unknown command; run --help');
   });

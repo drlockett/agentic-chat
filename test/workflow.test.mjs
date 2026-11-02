@@ -80,3 +80,41 @@ test('one entry link enrolls the suggested identity and selects the exact room w
  try{const args=['connect','--file',file,'--state',state,'--invite-file',inviteFile];await main(args);assert.equal((await readPrivate(state)).room.id,room);await main(args);assert.equal(enrolls,1);await import('node:fs/promises').then(fs=>fs.writeFile(inviteFile,link.replace(nonce,'m'.repeat(43))));await assert.rejects(main(args),/different invitation/);assert.equal(enrolls,1);assert.ok(!logs.join('').includes(nonce));assert.ok(!logs.join('').includes(c.accessToken));}
  finally{globalThis.fetch=oldFetch;console.log=oldLog;await rm(dir,{recursive:true,force:true});}
 });
+
+test('manual send retries preserve original human observation and recipient context after later inbox reads',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'agentic-observation-')),file=join(dir,'credential'),state=join(dir,'state');await savePrivate(file,c,true);
+ await savePrivate(state,{scope:'acme/'+workspace,memberId:member,room:{id:room,tenant:'acme',workspace,conversationId:42},seen:{},pending:null,outbox:{},controlRevision:1,observedHumanCursor:10,custom:{preserved:true}},true);
+ const originalFetch=globalThis.fetch,originalLog=console.log,posts=[];console.log=()=>{};let fail=true;
+ globalThis.fetch=async(url,options)=>{
+  if(url.endsWith('/inbox'))return Response.json({controlRevision:2,humanCursor:20});
+  if(url.includes('/join?'))return Response.json({});
+  if(url.includes('/messages?')){const body=JSON.parse(options.body);posts.push(body);assert.equal(options.headers['X-NodeVertex-Control-Revision'],'1');if(fail){fail=false;throw Error('Lost acknowledgment')}return Response.json({id:50});}
+  assert.fail('Unexpected request');
+ };
+ const args=['send','--file',file,'--state',state,'--key','original-answer','--message','[answer] Original result','--recipients',member];
+ try{
+  await assert.rejects(main(args));await main(['inbox','--file',file,'--state',state]);assert.equal((await readPrivate(state)).observedHumanCursor,20);
+  await assert.rejects(main([...args.slice(0,-1),workspace]),/different participation context/);
+  await main(args);assert.equal(posts.length,2);assert.equal(posts[0].clientMessageId,posts[1].clientMessageId);assert.equal(posts[1].participation.observedHumanCursor,10);assert.equal(posts[1].participation.controlRevision,1);assert.deepEqual(posts[1].participation.recipients,[member]);assert.equal((await readPrivate(state)).custom.preserved,true);
+ }finally{globalThis.fetch=originalFetch;console.log=originalLog;await rm(dir,{recursive:true,force:true});}
+});
+
+test('inspect command needs no credential file and creates no enrollment or local state',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'agentic-inspect-')),inviteFile=join(dir,'invite'),nonce='i'.repeat(43),link=`https://nodevertex.com/collaboration/acme/${workspace}/agent/entry/${nonce}`;
+ const fs=await import('node:fs/promises');await fs.writeFile(inviteFile,link,{mode:0o600});const oldFetch=globalThis.fetch,oldLog=console.log,logs=[];let calls=0;console.log=value=>logs.push(value);
+ globalThis.fetch=async(url,options)=>{calls++;assert.equal(url,link);assert.equal(options.method,undefined);return Response.json({suggestedName:'Maya',token:nonce})};
+ try{await main(['inspect','--invite-file',inviteFile]);assert.equal(calls,1);assert.equal(JSON.parse(logs[0]).enrolled,false);assert.ok(!logs.join('').includes(nonce));assert.deepEqual(await fs.readdir(dir),['invite']);}
+ finally{globalThis.fetch=oldFetch;console.log=oldLog;await rm(dir,{recursive:true,force:true});}
+});
+
+test('manual inbox acknowledgment requires explicit opt-in to handle the priority human lane',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'agentic-human-ack-')),file=join(dir,'credential'),state=join(dir,'state');await savePrivate(file,c,true);
+ await savePrivate(state,{scope:'acme/'+workspace,memberId:member,room:{id:room,tenant:'acme',workspace,conversationId:42},seen:{},pending:null,outbox:{}},true);
+ const originalFetch=globalThis.fetch,originalLog=console.log,acks=[];console.log=()=>{};
+ globalThis.fetch=async(url,options)=>{assert.ok(url.endsWith('/inbox/ack'));acks.push(JSON.parse(options.body));return Response.json({acknowledged:true})};
+ const args=['inbox-ack','--file',file,'--state',state,'--receipt','signed-proof'];
+ try{
+  await main(args);assert.equal(acks[0].acknowledgeHuman,false);await main([...args,'--include-human','true']);assert.equal(acks[1].acknowledgeHuman,true);assert.equal(acks[1].receipt,'signed-proof');
+  await assert.rejects(main([...args,'--include-human','maybe']),/only after handling/);assert.equal(acks.length,2);
+ }finally{globalThis.fetch=originalFetch;console.log=originalLog;await rm(dir,{recursive:true,force:true});}
+});
