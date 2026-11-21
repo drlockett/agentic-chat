@@ -4,7 +4,7 @@ import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as sleep} from 'node:timers/promises';
-import {AgentClient,ChatError,ORIGIN,invitation,inspectInvitation,jsonRequest,scope,version,unseen,batch,digest} from '../src/client.mjs';
+import {AgentClient,ChatError,invitation,inspectInvitation,jsonRequest,scope,version,unseen,batch,digest} from '../src/client.mjs';
 import {waitForMessages} from '../src/realtime.mjs';
 import {readPrivate,savePrivate,requireState,locked} from '../src/state.mjs';
 import {listen} from '../src/listener.mjs';
@@ -64,7 +64,7 @@ export async function main(argv){
     const link=o['invite-file']?await readFile(resolve(o['invite-file']),'utf8'):await input(),invite=await invitation(link);
     if(command==='connect'){
       const existing=await maybeState(file);
-      if(existing){scope(existing);if(existing.tenant!==invite.tenant||existing.workspace!==invite.workspace)throw new ChatError('Existing credentials belong to another invitation workspace');
+      if(existing){scope(existing);if(existing.origin!==invite.origin||existing.tenant!==invite.tenant||existing.workspace!==invite.workspace)throw new ChatError('Existing credentials belong to another invitation workspace');
         if(existing.invitationFingerprint!==digest(invite.token))throw new ChatError('This credential file belongs to a different invitation. Use a fresh credential path or explicitly select a room with your existing identity.');
         if(!existing.participation?.roomUrl)throw new ChatError('This credential has no initial room; select the exact room explicitly');
         await main(['select','--file',file,'--state',o.state,'--room',existing.participation.roomUrl]);return;}
@@ -75,9 +75,9 @@ export async function main(argv){
     // Refuse an existing file before consuming a one-use nonce.
     await savePrivate(file,{},true);let redeemed=false;
     try{
-      const result=await jsonRequest(ORIGIN+'/api/collaboration/'+invite.tenant+'/'+invite.workspace+'/agents/enroll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:invite.token,name:chosenName})});
+      const result=await jsonRequest(invite.origin+'/api/collaboration/'+invite.tenant+'/'+invite.workspace+'/agents/enroll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:invite.token,name:chosenName})});
       redeemed=true;
-      const c={origin:ORIGIN,tenant:invite.tenant,workspace:invite.workspace,memberId:result.member?.id,name:result.member?.name,accessToken:result.accessToken,expiresUtc:result.expiresUtc,participation:result.participation,invitationFingerprint:digest(invite.token)};scope(c);
+      const c={origin:invite.origin,tenant:invite.tenant,workspace:invite.workspace,memberId:result.member?.id,name:result.member?.name,accessToken:result.accessToken,expiresUtc:result.expiresUtc,participation:result.participation,invitationFingerprint:digest(invite.token)};scope(c);
       if(!/^[0-9a-f-]{36}$/i.test(c.memberId||''))throw new ChatError('Enrollment returned no agent identity');await savePrivate(file,c);
       output({event:'enrolled',workspace:c.workspace,memberId:c.memberId,name:c.name,expiresUtc:c.expiresUtc,participation:c.participation});
       if(command==='connect'){if(!c.participation?.roomUrl)throw new ChatError('Enrollment succeeded. Select an exact accessible room with select.');
@@ -119,7 +119,7 @@ export async function main(argv){
       const room=await client.resolveRoom(o.room),old=await maybeState(stateFile);
       if(old){requireState(old,c);if(old.room.id!==room.id)throw new ChatError('This state tracks another room. Use a separate state file.');output({event:'already-selected',room:old.room});return;}
       const history=await client.history(room),limit=number(o.limit,50,1,500);
-      const state={format:1,scope:scope(c),memberId:c.memberId,room,seen:Object.fromEntries(history.map(m=>[String(m.id),version(m)])),pending:null,outbox:{}};
+      const state={format:1,origin:c.origin,scope:scope(c),memberId:c.memberId,room,seen:Object.fromEntries(history.map(m=>[String(m.id),version(m)])),pending:null,outbox:{}};
       await savePrivate(stateFile,state,true);output({event:'room-selected',room,baselineMessages:history.length,omittedOlderContext:Math.max(0,history.length-limit),context:history.slice(-limit)});return;
     }
     const state=requireState(await readPrivate(stateFile),c);client.controlRevision=number(o['control-revision'],state.controlRevision||0,0,Number.MAX_SAFE_INTEGER);

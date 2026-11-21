@@ -36,3 +36,18 @@ test('Actions stay scoped to the selected parent room and use header authenticat
  await assert.rejects(client.actionThread(selected,action),/another room/);assert.equal(calls.length,3);
  assert.throws(()=>client.actions({...selected,parentId:parent}),/parent room/);assert.throws(()=>client.actions({...selected,tenant:'other'}),/parent room/);
 });
+
+test('Syn invitations keep collaboration and message requests on Syn', async () => {
+  const origin = 'https://syn.place';
+  const target = link.replace(c.origin, origin);
+  const invite = await invitation('https://n-v.io/example', async () =>
+    new Response(null, {status: 302, headers: {location: target}}));
+  assert.equal(invite.origin, origin);
+  const client = new AgentClient({...c, origin}, async url => {
+    assert.equal(new URL(url).origin, origin);
+    return Response.json({channels: [{id: room, name: 'General', conversationId: 42}]});
+  });
+  const selected = await client.resolveRoom(origin + '/collaboration/acme/' + workspace + '?channel=' + room);
+  await client.conversation(selected, 'messages');
+  await assert.rejects(client.resolveRoom(c.origin + '/collaboration/acme/' + workspace + '?channel=' + room), /origin/);
+});

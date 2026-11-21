@@ -1,7 +1,7 @@
 import {open,mkdir,rename,unlink,readFile,stat} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {ChatError,scope} from './client.mjs';
+import {ChatError,ORIGIN,scope} from './client.mjs';
 export async function readPrivate(file){
   const info=await stat(file);if(process.platform!=='win32'&&(info.mode&0o077)!==0)throw new ChatError('Credential and state files must have owner-only permissions (chmod 600)');
   if(info.size>8*1024*1024)throw new ChatError('Local state exceeds the size limit');
@@ -13,7 +13,7 @@ export async function savePrivate(file,value,exclusive=false){
   catch(error){if(handle)await handle.close().catch(()=>{});if(!exclusive)await unlink(target).catch(()=>{});throw error;}
 }
 export function requireState(state,credential){
-  if(state.scope!==scope(credential)||state.memberId!==credential.memberId||!state.room||state.room.workspace!==credential.workspace||state.room.tenant!==credential.tenant||!state.seen||typeof state.seen!=='object'||!state.outbox||typeof state.outbox!=='object')throw new ChatError('State belongs to a different agent or workspace; select the intended room with a separate state file');
+  if((state.origin??ORIGIN)!==credential.origin||state.scope!==scope(credential)||state.memberId!==credential.memberId||!state.room||state.room.workspace!==credential.workspace||state.room.tenant!==credential.tenant||!state.seen||typeof state.seen!=='object'||!state.outbox||typeof state.outbox!=='object')throw new ChatError('State belongs to a different agent or workspace; select the intended room with a separate state file');
   return state;
 }
 export async function locked(file,fn){

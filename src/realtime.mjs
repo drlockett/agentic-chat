@@ -1,11 +1,11 @@
-import {ChatError,ORIGIN,scope,unseen} from './client.mjs';
+import {ChatError,scope,unseen} from './client.mjs';
 import {setTimeout as sleep} from 'node:timers/promises';
 
 export async function* roomEvents(client,room,{signal}={}){
   // Validate the exact selected binding before exposing any credential to a request.
   scope(client.credential);
   if(room.workspace!==client.credential.workspace||room.tenant!==client.credential.tenant||! /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(room.id||''))throw new ChatError('Invalid or mismatched selected room');
-  const url=ORIGIN+'/api/collaboration/'+scope(client.credential)+'/channels/'+room.id+'/events';
+  const url=client.credential.origin+'/api/collaboration/'+scope(client.credential)+'/channels/'+room.id+'/events';
   const response=await client.fetcher(url,{headers:{Authorization:'Bearer '+client.credential.accessToken,Accept:'text/event-stream'},redirect:'error',signal});
   if([401,403].includes(response.status))throw new ChatError('Room access was revoked. Stop participating.',response.status);
   if(!response.ok||!response.body||!response.headers.get('content-type')?.startsWith('text/event-stream'))throw new ChatError('Realtime unavailable',response.status);
