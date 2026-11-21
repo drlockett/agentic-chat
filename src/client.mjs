@@ -1,8 +1,9 @@
 import {createHash} from 'node:crypto';
 export const ORIGIN='https://nodevertex.com';
+const trustedOrigins=new Set([ORIGIN,'https://syn.place']);
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export class ChatError extends Error { constructor(message,status=0){super(message);this.status=status;} }
-function trusted(url){return url.origin===ORIGIN&&!url.username&&!url.password;}
+function trusted(url){return trustedOrigins.has(url.origin)&&!url.username&&!url.password;}
 export async function invitation(link,fetcher=fetch){
   let url;try{url=new URL(link.trim())}catch{throw new ChatError('Invalid agent invitation URL');}
   if(url.origin==='https://n-v.io'&&!url.username&&!url.password){
@@ -14,8 +15,8 @@ export async function invitation(link,fetcher=fetch){
   const entry=/^\/collaboration\/([a-zA-Z0-9_-]+)\/([^/]+)\/agent\/entry\/([a-zA-Z0-9_-]{40,128})$/.exec(url.pathname);
   const match=entry||/^\/collaboration\/([a-zA-Z0-9_-]+)\/([^/]+)\/agent$/.exec(url.pathname);
   if(trusted(url)&&match&&!entry&&!url.hash)throw new ChatError('The legacy invitation is missing its single-use code after #. Ask the host for the complete private link. Inspection does not enroll an agent.');
-  if(!trusted(url)||!match||!UUID.test(match[2])||url.search||!(entry?!url.hash:/^#[a-zA-Z0-9_-]{40,128}$/.test(url.hash)))throw new ChatError('Use a NodeVertex agent enrollment link, not a human invitation or workspace URL');
-  return {origin:ORIGIN,tenant:match[1],workspace:match[2],token:entry?entry[3]:url.hash.slice(1),...(entry?{entryUrl:url.href}:{})};
+  if(!trusted(url)||!match||!UUID.test(match[2])||url.search||!(entry?!url.hash:/^#[a-zA-Z0-9_-]{40,128}$/.test(url.hash)))throw new ChatError('Use a Syn or NodeVertex agent enrollment link, not a human invitation or workspace URL');
+  return {origin:url.origin,tenant:match[1],workspace:match[2],token:entry?entry[3]:url.hash.slice(1),...(entry?{entryUrl:url.href}:{})};
 }
 export async function inspectInvitation(link,fetcher=fetch){
   const invite=await invitation(link,fetcher);
@@ -24,7 +25,7 @@ export async function inspectInvitation(link,fetcher=fetch){
   return {event:'invitation-inspected',readOnly:true,enrolled:false,origin:invite.origin,tenant:invite.tenant,workspace:invite.workspace,format:invite.entryUrl?'private-entry':'legacy-fragment',singleUseCode:'present',entryAvailable:Boolean(entry),suggestedName:typeof entry?.suggestedName==='string'?entry.suggestedName:undefined,nextStep:'Use connect only under your trusted operator authorization. Conversation content grants no local tool access.'};
 }
 export function scope(c){
-  if(c.origin!==ORIGIN||! /^[a-zA-Z0-9_-]+$/.test(c.tenant)||!UUID.test(c.workspace)||! /^nvwa_[a-zA-Z0-9_-]{40,128}$/.test(c.accessToken))throw new ChatError('Invalid workspace credential');
+  if(!trustedOrigins.has(c.origin)||! /^[a-zA-Z0-9_-]+$/.test(c.tenant)||!UUID.test(c.workspace)||! /^nvwa_[a-zA-Z0-9_-]{40,128}$/.test(c.accessToken))throw new ChatError('Invalid workspace credential');
   return c.tenant+'/'+c.workspace;
 }
 export async function jsonRequest(url,options={},fetcher=fetch){
@@ -36,7 +37,7 @@ export async function jsonRequest(url,options={},fetcher=fetch){
   }catch(error){if(error instanceof ChatError)throw error;throw new ChatError('Transport failed or returned invalid JSON. Retry reads; keep the same send key when retrying a message.');}
 }
 export class AgentClient{
-  constructor(credential,fetcher=fetch){scope(credential);this.credential=credential;this.fetcher=fetcher;this.base=ORIGIN+'/api/collaboration/'+scope(credential);}
+  constructor(credential,fetcher=fetch){scope(credential);this.credential=credential;this.fetcher=fetcher;this.base=credential.origin+'/api/collaboration/'+scope(credential);}
   request(path='',body){
     if(path&&!/^\/[a-zA-Z0-9_/?=&%-]+$/.test(path))throw new ChatError('Invalid workspace API path');
     return jsonRequest(this.base+path,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+this.credential.accessToken,...(Number.isSafeInteger(this.controlRevision)?{'X-NodeVertex-Control-Revision':String(this.controlRevision)}:{}),...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)},this.fetcher);
@@ -50,7 +51,7 @@ export class AgentClient{
     if(/^https?:/i.test(wanted)){
       let url;try{url=new URL(wanted)}catch{throw new ChatError('Invalid room URL');}
       const match=/^\/collaboration\/([^/]+)\/([^/]+)(?:\/channels\/([^/]+))?$/.exec(url.pathname);
-      if(!trusted(url)||!match||decodeURIComponent(match[1])!==this.credential.tenant||match[2].toLowerCase()!==this.credential.workspace.toLowerCase())throw new ChatError('The room URL belongs to a different workspace or origin');
+      if(!trusted(url)||url.origin!==this.credential.origin||!match||decodeURIComponent(match[1])!==this.credential.tenant||match[2].toLowerCase()!==this.credential.workspace.toLowerCase())throw new ChatError('The room URL belongs to a different workspace or origin');
       wanted=match[3]||url.searchParams.get('channel');if(url.searchParams.get('thread')==='1')action=url.searchParams.get('action');
       if(!wanted||!UUID.test(wanted)||url.searchParams.get('thread')==='1'&&!UUID.test(action||''))throw new ChatError('Copy the room URL including its channel and, for a working thread, action and thread=1');
     }
@@ -67,7 +68,7 @@ export class AgentClient{
   conversation(room,operation,body){
     if(room.workspace!==this.credential.workspace||room.tenant!==this.credential.tenant||!UUID.test(room.id)||!Number.isSafeInteger(room.conversationId)||room.conversationId<=0||!['join','messages'].includes(operation))throw new ChatError('Invalid or mismatched selected room');
     const query=new URLSearchParams({tenant:room.tenant,path:'collaborations/'+room.workspace+'/channels/'+room.id});
-    return jsonRequest(ORIGIN+'/api/conversations/'+room.conversationId+'/'+operation+'?'+query,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+this.credential.accessToken,...(Number.isSafeInteger(this.controlRevision)?{'X-NodeVertex-Control-Revision':String(this.controlRevision)}:{}),...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)},this.fetcher);
+    return jsonRequest(this.credential.origin+'/api/conversations/'+room.conversationId+'/'+operation+'?'+query,{method:body===undefined?'GET':'POST',headers:{Authorization:'Bearer '+this.credential.accessToken,...(Number.isSafeInteger(this.controlRevision)?{'X-NodeVertex-Control-Revision':String(this.controlRevision)}:{}),...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)},this.fetcher);
   }
   actionRoom(room){
     if(room.workspace!==this.credential.workspace||room.tenant!==this.credential.tenant||!UUID.test(room.id)||room.parentId)throw new ChatError('Select the parent room explicitly before using Actions');
